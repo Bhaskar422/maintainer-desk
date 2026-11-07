@@ -4,7 +4,7 @@
 
 Contributors claim issues and report pull requests in a public Discord room. Three agents check every request against the project's rules, review every pull request twice (Claude, then an independent Codex check) and bring each decision to the maintainers' private Slack room, ready to approve in one reply. Nothing changes on GitHub until a person says so.
 
-> Demo video: _coming_ · Built for the [Flip the Switch hackathon](https://www.wemakedevs.org/hackathons/switch), Track 1: Best Business Workflow.
+> **Demo video: [youtu.be/Irc_ArSta0g](https://youtu.be/Irc_ArSta0g)** (2:53) · Built for the [Flip the Switch hackathon](https://www.wemakedevs.org/hackathons/switch), Track 1: Best Business Workflow.
 
 ## The problem
 
@@ -21,14 +21,14 @@ Every one of those is a maintainer reading a comment, checking a rule by hand an
 ```
          Discord                                   Slack
  ┌──────────────────────────┐   linked    ┌───────────────────────────────┐
- │  oss-contributors        │  "approvals"│  oss-maintainers (private)    │
+ │  textkit-contributors    │  "approvals"│  textkit-maintainers (private)│
  │                          │ ──────────► │                               │
  │  contributors            │             │  maintainers  ◄── decide      │
- │  oss-desk (Claude) ──────┼─────────────┼─► oss-desk                    │
- │   checks claims & PRs    │ ◄───────────┼── oss-reviewer (Claude)       │
+ │  textkit-desk (Claude) ──┼─────────────┼─► textkit-desk                │
+ │   checks claims & PRs    │ ◄───────────┼── textkit-reviewer (Claude)   │
  │   against the rules      │  outcomes   │      ▲  independent           │
  └──────────────────────────┘             │      ▼  second opinion        │
-                                          │   oss-checker (Codex)         │
+                                          │   textkit-checker (Codex)     │
                                           └───────────────┬───────────────┘
                                                           │ desk CLI (gh)
                                                           ▼
@@ -38,9 +38,9 @@ Every one of those is a maintainer reading a comment, checking a rule by hand an
 | Step | Room | What happens |
 |---|---|---|
 | Claim | contributors | "Can I take #12? GitHub: alice". The desk runs `desk claim-check 12 alice`: label, free, PR cap, issue cap. Ineligible requests are answered on the spot with three free issues; eligible ones go to the maintainers. |
-| Approve | maintainers | "Claim #12 for alice: eligible, 1 of 5 PRs open." The maintainer replies `@oss-desk approve 12`. The desk assigns her on GitHub and tells her in Discord. |
-| Review | maintainers | "PR #9 is up." The reviewer (Claude) reads the facts and the diff, records its verdict, then asks the checker (Codex) for an independent one. The maintainer gets both verdicts and a ready command (`@oss-desk comment 9 ...` or `@oss-desk close 9 ...`). When they disagree, the maintainer decides. |
-| Sweep | maintainers | `@oss-desk sweep` lists assignments idle past 48 hours and pull requests nobody reviewed. `@oss-desk unassign 7` frees an issue and announces it to contributors. |
+| Approve | maintainers | "Claim #12 for alice: eligible, 1 of 5 PRs open." The maintainer replies `@textkit-desk approve 12`. The desk assigns her on GitHub and tells her in Discord. |
+| Review | maintainers | "PR #9 is up." The reviewer (Claude) reads the facts and the diff, records its verdict, then asks the checker (Codex) for an independent one. The maintainer gets both verdicts and a ready command (`@textkit-desk comment 9 ...` or `@textkit-desk close 9 ...`). When they disagree, the maintainer decides. |
+| Sweep | maintainers | `@textkit-desk sweep` lists assignments idle past 48 hours and pull requests nobody reviewed. `@textkit-desk unassign 7` frees an issue and announces it to contributors. |
 
 ## Why this needs Switch
 
@@ -71,8 +71,8 @@ You need: [Switch Console](https://docs.switchagents.ai/switch-rooms/getting-sta
    TARGET_REPO=<you>/desk-demo bin/desk sweep
    TARGET_REPO=<you>/desk-demo bin/desk claim-check 2 someone
    ```
-3. **Create the desk in Switch.** In Switch Console, open Templates, add `templates/maintainer-desk.template.yaml`, set **Repository to run** to `<you>/desk-demo`, and create. Switch makes the three agents, both rooms and the link, and each agent introduces itself.
-4. **Use it.** In the contributors room: `@oss-desk can I take #4? my GitHub is <you>`. In the maintainers room: `@oss-desk approve 4`, then `@oss-desk sweep`.
+3. **Create the desk in Switch.** In Switch Console, open Templates, add `templates/maintainer-desk.template.yaml`, set **Name prefix** to `textkit` and **Repository to run** to `<you>/desk-demo`, and create. Agent and room names follow the prefix you choose (`<prefix>-desk`, `<prefix>-maintainers`, …); the default is `oss`. Switch makes the three agents, both rooms and the link, and each agent introduces itself.
+4. **Use it.** In the contributors room: `@textkit-desk can I take #3? my GitHub is <you>`. In the maintainers room: `@textkit-desk approve 3`, then `@textkit-desk sweep`.
 
 **Try it on a real repository without changing anything:** choose **Mode: preview** in the form. Every GitHub change is then described instead of made. The rulebook alone also works read-only on any public repository:
 
