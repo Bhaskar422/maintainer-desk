@@ -11,8 +11,8 @@ Contributors claim issues and report pull requests in a public Discord room. Thr
 Popular open-source projects run contribution drives the same way: comment on an issue, tag a maintainer, wait to be assigned. During this hackathon, the Switch repository itself shows what that costs. Read-only, on 7 November 2026, `desk` found:
 
 - every one of the 63 open `hackathon` issues already held, by 538 assignments in total; issue #843 alone has 8 assignees, under a rule of one person per issue
-- <!-- STALE --> assignments with no activity for 48 hours or more, the point at which the rules say an issue may be handed on
-- open pull requests that link an issue not assigned to their author, or no issue at all
+- 388 of those 538 assignments with no activity for 48 hours or more (213 of them for over a week), the point at which the rules say an issue may be handed on
+- open pull requests that break the rules: #1705 and #1690 close issues not assigned to their authors, #1650 links no issue at all
 
 Every one of those is a maintainer reading a comment, checking a rule by hand and typing a reply.
 
