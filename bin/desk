@@ -16,12 +16,14 @@ fail() { jq -cn --arg e "$1" '{ok:false, error:$e}'; exit 1; }
 need_repo() { [ -n "$TARGET_REPO" ] || fail "TARGET_REPO is not set (owner/name). Set it in desk.conf or the environment."; }
 is_num() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
 clean_user() { printf '%s' "${1#@}"; }
+valid_user() { printf '%s' "${1:-}" | grep -Eq '^[A-Za-z0-9](-?[A-Za-z0-9]){0,38}$'; }
+check_user() { valid_user "${1:-}" || fail "not a valid GitHub username: ${1:-}"; }
 dry() { [ "$DRY_RUN" = "1" ]; }
 
 log_event() { # type json
   mkdir -p "$(dirname "$DESK_LOG")"
   jq -cn --arg type "$1" --arg repo "${TARGET_REPO:-}" --argjson data "$2" --argjson dry "$(dry && echo true || echo false)" \
-    '{ts:(now|todate), type:$type, repo:$repo, dry_run:$dry} + $data' >> "$DESK_LOG"
+    '$data + {ts:(now|todate), type:$type, repo:$repo, dry_run:$dry}' >> "$DESK_LOG"
 }
 
 label_args() { if [ -n "$CLAIM_LABEL" ]; then printf -- '--label\n%s\n' "$CLAIM_LABEL"; fi; }
@@ -36,7 +38,7 @@ free_issues() { # limit -> JSON array of {number,title,url}
 
 cmd_claim_check() { # issue user
   need_repo
-  local issue="${1:-}" user; user="$(clean_user "${2:-}")"
+  local issue="${1:-}" user; user="$(clean_user "${2:-}")"; check_user "$user"
   is_num "$issue" || fail "usage: desk claim-check <issue-number> <github-user>"
   [ -n "$user" ] || fail "usage: desk claim-check <issue-number> <github-user>"
 
@@ -83,7 +85,7 @@ cmd_free_issues() { need_repo; jq -cn --argjson s "$(free_issues "${1:-5}")" '{o
 
 cmd_assign() { # issue user [approver]
   need_repo
-  local issue="${1:-}" user approver="${3:-a maintainer}"; user="$(clean_user "${2:-}")"
+  local issue="${1:-}" user approver="${3:-a maintainer}"; user="$(clean_user "${2:-}")"; check_user "$user"
   is_num "$issue" && [ -n "$user" ] || fail "usage: desk assign <issue-number> <github-user> [approved-by]"
   local note="Assigned to @$user by Maintainer Desk, approved by $approver. Please open a pull request that says \`Closes #$issue\`. Assignments with no activity for ${IDLE_HOURS}h may be handed to someone else."
   if dry; then
@@ -102,7 +104,7 @@ cmd_assign() { # issue user [approver]
 
 cmd_unassign() { # issue user [reason]
   need_repo
-  local issue="${1:-}" user reason="${3:-No activity within ${IDLE_HOURS}h.}"; user="$(clean_user "${2:-}")"
+  local issue="${1:-}" user reason="${3:-No activity within ${IDLE_HOURS}h.}"; user="$(clean_user "${2:-}")"; check_user "$user"
   is_num "$issue" && [ -n "$user" ] || fail "usage: desk unassign <issue-number> <github-user> [reason]"
   local note="@$user has been unassigned from this issue by Maintainer Desk: $reason It is open for someone else to claim."
   if dry; then
@@ -253,6 +255,7 @@ cmd_log() { # type json
   local type="${1:-}" data="${2:-}"
   [ -n "$data" ] || data='{}'
   [ -n "$type" ] || fail "usage: desk log <type> '<json object>'"
+  case "$type" in verdict|agreement|disagreement|claim_denied) ;; *) fail "desk log only records: verdict, agreement, disagreement, claim_denied" ;; esac
   jq -e 'type=="object"' <<<"$data" >/dev/null 2>&1 || fail "the second argument must be a JSON object"
   log_event "$type" "$data"
   echo '{"ok":true,"logged":true}'

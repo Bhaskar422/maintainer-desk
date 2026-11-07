@@ -102,7 +102,10 @@ The rules live in [`desk.conf`](desk.conf): claim label, PR cap, issue cap, idle
 - Nobody merges except a maintainer, by hand.
 - The checker forms its verdict before reading anyone else's.
 - Preview mode and `DRY_RUN=1` make every change a description.
-- Agents never fetch or install code. The owner installs the desk CLI once (`scripts/install.sh`); agents only run that. This matters: an agent that downloads a script because a chat message asked it to is exactly what Claude Code's auto mode blocks as a prompt-injection pattern, and it is right to.
+- Agents never download or install tools. The owner installs the desk CLI once (`scripts/install.sh`); agents only run that. This matters: an agent that downloads a script because a chat message asked it to is exactly what Claude Code's auto mode blocks as a prompt-injection pattern, and it is right to.
+- The one exception is deliberate: the checker checks a pull request out and runs its tests, because that is how it catches bugs a diff hides. A hostile PR's test code runs as the user the agents run as. On a repository strangers can open PRs against, run the checker in a disposable container or VM with no personal credentials, or remove that step from its instructions and rely on CI (`pr-facts` reports it).
+- Give the agents their own GitHub token, not your personal login: a fine-grained token limited to the target repository's issues and pull requests, or a separate bot account.
+- The approval and preview rules live in the agents' instructions. For a hard guarantee, set `DRY_RUN=1` in the agents' environment: every write command then only describes what it would do. The CLI also rejects malformed usernames, and `desk log` only accepts verdict events and can't overwrite the time, repository or dry-run fields.
 - Pull request diffs are untrusted input: a hostile PR can hide instructions in its code. Keep the reviewer and checker in auto mode, or approve their commands one by one. Never give them Bypass on a repository strangers can open PRs against. The recorded demo runs all three agents in auto mode, with no Bypass and no permission prompts.
 
 ## Repository layout
