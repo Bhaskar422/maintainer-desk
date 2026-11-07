@@ -103,7 +103,7 @@ The rules live in [`desk.conf`](desk.conf): claim label, PR cap, issue cap, idle
 - The checker forms its verdict before reading anyone else's.
 - Preview mode and `DRY_RUN=1` make every change a description.
 - Agents never fetch or install code. The owner installs the desk CLI once (`scripts/install.sh`); agents only run that. This matters: an agent that downloads a script because a chat message asked it to is exactly what Claude Code's auto mode blocks as a prompt-injection pattern, and it is right to.
-- Pull request diffs are untrusted input: a hostile PR can hide instructions in its code. Keep the reviewer and checker in auto mode, or approve their commands one by one. Never give them Bypass on a repository strangers can open PRs against. (In our recorded demo the reviewer ran with Bypass, on our own seeded repository, because Switch 0.40.1 could not relay a chat approval back to Claude Code.)
+- Pull request diffs are untrusted input: a hostile PR can hide instructions in its code. Keep the reviewer and checker in auto mode, or approve their commands one by one. Never give them Bypass on a repository strangers can open PRs against. The recorded demo runs all three agents in auto mode, with no Bypass and no permission prompts.
 
 ## Repository layout
 
