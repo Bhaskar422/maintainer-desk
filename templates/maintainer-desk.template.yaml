@@ -190,7 +190,7 @@ agents:
            obvious bugs).
          A PR with anything in `rule_breaks` is never READY.
       3. Record your verdict before anyone sees it:
-           ~/.maintainer-desk/bin/desk log verdict '{"pr":N,"agent":"{team}-reviewer","verdict":"<VERDICT>"}'
+           TARGET_REPO={target_repo} ~/.maintainer-desk/bin/desk log verdict '{"pr":N,"agent":"{team}-reviewer","verdict":"<VERDICT>"}'
          Do not post it yet.
       4. Ask for an independent opinion, without your verdict or reasons:
            @{team}-checker independent review of PR #N please.
@@ -247,7 +247,7 @@ agents:
         - <a file and line, or a command and its result>
         - <up to three>
       Then run:
-        ~/.maintainer-desk/bin/desk log verdict '{"pr":N,"agent":"{team}-checker","verdict":"<VERDICT>"}'
+        TARGET_REPO={target_repo} ~/.maintainer-desk/bin/desk log verdict '{"pr":N,"agent":"{team}-checker","verdict":"<VERDICT>"}'
 
 group:
   name: "{team} maintainer desk"
