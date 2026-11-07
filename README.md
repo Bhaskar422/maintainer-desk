@@ -70,7 +70,11 @@ You need: [Switch Console](https://docs.switchagents.ai/switch-rooms/getting-sta
    TARGET_REPO=<you>/desk-demo bin/desk claim-check 2 someone
    ```
 3. **Create the desk in Switch.** In Switch Console, open Templates, add `templates/maintainer-desk.template.yaml`, set **Repository to run** to `<you>/desk-demo`, and create. Switch makes the three agents, both rooms and the link, and each agent introduces itself.
-4. **Use it.** In the contributors room: `@oss-desk can I take #4? my GitHub is <you>`. In the maintainers room: `@oss-desk approve 4`, then `@oss-desk sweep`.
+4. **Let the Claude agents run the rulebook.** Claude Code's auto mode will not run a freshly cloned script because a chat message says so, which is the right default. Grant it once, on your machine, for `desk/bin/desk` only; everything else the agents do still goes through the usual checks:
+   ```bash
+   TARGET_REPO=<you>/desk-demo scripts/allow-desk.sh ~/.switch/agents/*/oss-desk ~/.switch/agents/*/oss-reviewer
+   ```
+5. **Use it.** In the contributors room: `@oss-desk can I take #4? my GitHub is <you>`. In the maintainers room: `@oss-desk approve 4`, then `@oss-desk sweep`.
 
 **Try it on a real repository without changing anything:** choose **Mode: preview** in the form. Every GitHub change is then described instead of made. The rulebook alone also works read-only on any public repository:
 
