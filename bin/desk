@@ -1,0 +1,327 @@
+#!/usr/bin/env bash
+# desk: the rulebook behind Maintainer Desk.
+#
+# Agents in the Switch rooms call this instead of guessing. Every command
+# prints one JSON object on stdout, so an agent can quote the facts exactly.
+# Every GitHub change honours DRY_RUN=1 and is appended to DESK_LOG.
+#
+# Needs: gh (logged in), jq.
+set -euo pipefail
+
+DESK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../desk.conf
+. "$DESK_ROOT/desk.conf"
+
+fail() { jq -cn --arg e "$1" '{ok:false, error:$e}'; exit 1; }
+need_repo() { [ -n "$TARGET_REPO" ] || fail "TARGET_REPO is not set (owner/name). Set it in desk.conf or the environment."; }
+is_num() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+clean_user() { printf '%s' "${1#@}"; }
+dry() { [ "$DRY_RUN" = "1" ]; }
+
+log_event() { # type json
+  mkdir -p "$(dirname "$DESK_LOG")"
+  jq -cn --arg type "$1" --arg repo "${TARGET_REPO:-}" --argjson data "$2" --argjson dry "$(dry && echo true || echo false)" \
+    '{ts:(now|todate), type:$type, repo:$repo, dry_run:$dry} + $data' >> "$DESK_LOG"
+}
+
+label_args() { if [ -n "$CLAIM_LABEL" ]; then printf -- '--label\n%s\n' "$CLAIM_LABEL"; fi; }
+
+free_issues() { # limit -> JSON array of {number,title,url}
+  local limit="${1:-3}" args=()
+  while IFS= read -r a; do args+=("$a"); done < <(label_args)
+  gh issue list --repo "$TARGET_REPO" --state open ${args[@]+"${args[@]}"} --limit 100 \
+    --json number,title,url,assignees \
+    | jq -c --argjson n "$limit" '[.[] | select(.assignees|length==0) | {number,title,url}] | sort_by(.number) | .[:$n]'
+}
+
+cmd_claim_check() { # issue user
+  need_repo
+  local issue="${1:-}" user; user="$(clean_user "${2:-}")"
+  is_num "$issue" || fail "usage: desk claim-check <issue-number> <github-user>"
+  [ -n "$user" ] || fail "usage: desk claim-check <issue-number> <github-user>"
+
+  local user_ok=true
+  gh api "users/$user" --jq .login >/dev/null 2>&1 || user_ok=false
+
+  local issue_json
+  issue_json="$(gh issue view "$issue" --repo "$TARGET_REPO" --json number,title,state,url,labels,assignees 2>/dev/null)" \
+    || fail "issue #$issue does not exist in $TARGET_REPO"
+
+  local open_prs=0 held=0
+  if $user_ok; then
+    open_prs="$(gh pr list --repo "$TARGET_REPO" --author "$user" --state open --limit 100 --json number --jq length)"
+    held="$(gh issue list --repo "$TARGET_REPO" --assignee "$user" --state open --limit 100 --json number --jq length)"
+  fi
+
+  local result
+  result="$(jq -c -n \
+    --argjson issue "$issue_json" --arg user "$user" --argjson user_ok "$user_ok" \
+    --arg label "$CLAIM_LABEL" --argjson pr_cap "$PR_CAP" --argjson assign_cap "$ASSIGN_CAP" \
+    --argjson open_prs "$open_prs" --argjson held "$held" '
+    ($issue.assignees | map(.login)) as $who
+    | ($issue.labels | map(.name)) as $labels
+    | [ (if $user_ok then empty else {code:"unknown_github_user", detail:"No GitHub account called \($user)."} end),
+        (if $issue.state != "OPEN" then {code:"issue_closed", detail:"Issue #\($issue.number) is closed."} else empty end),
+        (if $label != "" and ($labels | index($label) | not) then {code:"missing_label", detail:"Only issues labelled \($label) can be claimed."} else empty end),
+        (if ($who | index($user)) then {code:"already_yours", detail:"\($user) already holds #\($issue.number)."}
+         elif ($who | length) > 0 then {code:"already_assigned", detail:"#\($issue.number) is assigned to \($who | join(", "))."} else empty end),
+        (if $pr_cap > 0 and $open_prs >= $pr_cap then {code:"pr_cap_reached", detail:"\($user) has \($open_prs) open pull requests; the cap is \($pr_cap)."} else empty end),
+        (if $assign_cap > 0 and $held >= $assign_cap then {code:"assign_cap_reached", detail:"\($user) already holds \($held) open issues; the cap is \($assign_cap)."} else empty end)
+      ] as $blocks
+    | {ok:true, eligible:($blocks|length==0), user:$user,
+       issue:{number:$issue.number, title:$issue.title, url:$issue.url, state:$issue.state, labels:$labels, assignees:$who},
+       user_open_prs:$open_prs, user_open_issues:$held, blocks:$blocks}')"
+
+  if [ "$(jq -r .eligible <<<"$result")" = "false" ]; then
+    result="$(jq -c --argjson s "$(free_issues 3)" '. + {suggestions:$s}' <<<"$result")"
+  fi
+  log_event claim_checked "$(jq -c '{issue:.issue.number, user, eligible, blocks:[.blocks[].code]}' <<<"$result")"
+  echo "$result"
+}
+
+cmd_free_issues() { need_repo; jq -cn --argjson s "$(free_issues "${1:-5}")" '{ok:true, free:$s}'; }
+
+cmd_assign() { # issue user [approver]
+  need_repo
+  local issue="${1:-}" user approver="${3:-a maintainer}"; user="$(clean_user "${2:-}")"
+  is_num "$issue" && [ -n "$user" ] || fail "usage: desk assign <issue-number> <github-user> [approved-by]"
+  local note="Assigned to @$user by Maintainer Desk, approved by $approver. Please open a pull request that says \`Closes #$issue\`. Assignments with no activity for ${IDLE_HOURS}h may be handed to someone else."
+  if dry; then
+    log_event assigned "$(jq -cn --argjson i "$issue" --arg u "$user" --arg a "$approver" '{issue:$i,user:$u,approved_by:$a}')"
+    jq -cn --argjson i "$issue" --arg u "$user" --arg c "$note" '{ok:true, dry_run:true, would:"assign #\($i) to \($u) and comment", comment:$c}'
+    return
+  fi
+  if ! gh issue edit "$issue" --repo "$TARGET_REPO" --add-assignee "$user" >/dev/null 2>&1; then
+    fail "GitHub refused to assign $user to #$issue. GitHub only lets you assign people who have commented on the issue or can write to the repo. Ask $user to comment on the issue on GitHub, then try again."
+  fi
+  gh issue comment "$issue" --repo "$TARGET_REPO" --body "$note" >/dev/null
+  local now; now="$(gh issue view "$issue" --repo "$TARGET_REPO" --json assignees,url --jq '{assignees:[.assignees[].login], url}')"
+  log_event assigned "$(jq -cn --argjson i "$issue" --arg u "$user" --arg a "$approver" '{issue:$i,user:$u,approved_by:$a}')"
+  jq -cn --argjson i "$issue" --argjson now "$now" '{ok:true, assigned:true, issue:$i} + $now'
+}
+
+cmd_unassign() { # issue user [reason]
+  need_repo
+  local issue="${1:-}" user reason="${3:-No activity within ${IDLE_HOURS}h.}"; user="$(clean_user "${2:-}")"
+  is_num "$issue" && [ -n "$user" ] || fail "usage: desk unassign <issue-number> <github-user> [reason]"
+  local note="@$user has been unassigned from this issue by Maintainer Desk: $reason It is open for someone else to claim."
+  if dry; then
+    log_event unassigned "$(jq -cn --argjson i "$issue" --arg u "$user" --arg r "$reason" '{issue:$i,user:$u,reason:$r}')"
+    jq -cn --argjson i "$issue" --arg u "$user" --arg c "$note" '{ok:true, dry_run:true, would:"unassign \($u) from #\($i) and comment", comment:$c}'
+    return
+  fi
+  gh issue edit "$issue" --repo "$TARGET_REPO" --remove-assignee "$user" >/dev/null || fail "could not unassign $user from #$issue"
+  gh issue comment "$issue" --repo "$TARGET_REPO" --body "$note" >/dev/null
+  log_event unassigned "$(jq -cn --argjson i "$issue" --arg u "$user" --arg r "$reason" '{issue:$i,user:$u,reason:$r}')"
+  jq -cn --argjson i "$issue" --arg u "$user" '{ok:true, unassigned:true, issue:$i, user:$u}'
+}
+
+cmd_comment() { # number text...
+  need_repo
+  local n="${1:-}"; shift || true
+  local body="$*"
+  is_num "$n" && [ -n "$body" ] || fail "usage: desk comment <issue-or-pr-number> <text>"
+  if dry; then
+    log_event commented "$(jq -cn --argjson n "$n" '{number:$n}')"
+    jq -cn --argjson n "$n" --arg b "$body" '{ok:true, dry_run:true, would:"comment on #\($n)", comment:$b}'
+    return
+  fi
+  local url; url="$(gh issue comment "$n" --repo "$TARGET_REPO" --body "$body")" || fail "could not comment on #$n"
+  log_event commented "$(jq -cn --argjson n "$n" '{number:$n}')"
+  jq -cn --argjson n "$n" --arg u "$url" '{ok:true, commented:true, number:$n, url:$u}'
+}
+
+cmd_close_pr() { # pr reason...
+  need_repo
+  local n="${1:-}"; shift || true
+  local reason="$*"
+  is_num "$n" && [ -n "$reason" ] || fail "usage: desk close-pr <pr-number> <reason>"
+  if dry; then
+    log_event pr_closed "$(jq -cn --argjson n "$n" --arg r "$reason" '{pr:$n, reason:$r}')"
+    jq -cn --argjson n "$n" --arg r "$reason" '{ok:true, dry_run:true, would:"close PR #\($n) with a comment", comment:$r}'
+    return
+  fi
+  gh pr close "$n" --repo "$TARGET_REPO" --comment "$reason" >/dev/null || fail "could not close PR #$n"
+  log_event pr_closed "$(jq -cn --argjson n "$n" --arg r "$reason" '{pr:$n, reason:$r}')"
+  jq -cn --argjson n "$n" '{ok:true, closed:true, pr:$n}'
+}
+
+cmd_pr_facts() { # pr
+  need_repo
+  local n="${1:-}"
+  is_num "$n" || fail "usage: desk pr-facts <pr-number>"
+  local pr
+  pr="$(gh pr view "$n" --repo "$TARGET_REPO" \
+    --json number,title,url,state,isDraft,author,body,additions,deletions,changedFiles,files,closingIssuesReferences,statusCheckRollup,createdAt 2>/dev/null)" \
+    || fail "pull request #$n does not exist in $TARGET_REPO"
+
+  local author linked=() issues="[]"
+  author="$(jq -r .author.login <<<"$pr")"
+  while IFS= read -r i; do [ -n "$i" ] && linked+=("$i"); done < <(jq -r '.closingIssuesReferences[]?.number' <<<"$pr")
+  for i in ${linked[@]+"${linked[@]}"}; do
+    local one
+    one="$(gh issue view "$i" --repo "$TARGET_REPO" --json number,title,state,labels,assignees \
+      --jq '{number,title,state,labels:[.labels[].name],assignees:[.assignees[].login]}' 2>/dev/null || echo null)"
+    issues="$(jq -c --argjson o "$one" '. + [$o]' <<<"$issues")"
+  done
+  local open_prs
+  open_prs="$(gh pr list --repo "$TARGET_REPO" --author "$author" --state open --limit 100 --json number --jq length)"
+
+  local result
+  result="$(jq -c -n --argjson pr "$pr" --argjson issues "$issues" --arg label "$CLAIM_LABEL" \
+    --argjson pr_cap "$PR_CAP" --argjson trivial "$TRIVIAL_LINES" --argjson open_prs "$open_prs" '
+    ($pr.author.login) as $a
+    | ($pr.files | map(.path)) as $paths
+    | ($pr.additions + $pr.deletions) as $lines
+    | ([$pr.statusCheckRollup[]? | (.conclusion // .state // "") | ascii_upcase]) as $checks
+    | (if ($checks|length)==0 then "none"
+       elif any($checks[]; . == "FAILURE" or . == "ERROR" or . == "TIMED_OUT" or . == "CANCELLED") then "failing"
+       elif any($checks[]; . == "" or . == "PENDING" or . == "IN_PROGRESS" or . == "QUEUED" or . == "EXPECTED") then "pending"
+       else "passing" end) as $ci
+    | ($paths | map(select(test("(^|/)(tests?|spec|__tests__)(/|$)|_test\\.|\\.test\\.|test_"))) | length > 0) as $has_tests
+    | ($paths | all(test("\\.(md|txt|rst)$"; "i"))) as $docs_only
+    | [ (if ($issues|length)==0 then {code:"no_linked_issue", detail:"The description does not say Closes #<issue>."} else empty end),
+        ($issues[] | select(. != null) | select(.assignees | index($a) | not)
+          | {code:"issue_not_assigned_to_author", detail:"#\(.number) is not assigned to \($a)."}),
+        ($issues[] | select(. != null) | select($label != "" and (.labels | index($label) | not))
+          | {code:"issue_missing_label", detail:"#\(.number) is not labelled \($label)."}),
+        (if $pr_cap > 0 and $open_prs > $pr_cap then {code:"author_over_pr_cap", detail:"\($a) has \($open_prs) open pull requests; the cap is \($pr_cap)."} else empty end),
+        (if $lines <= $trivial then {code:"trivial_change", detail:"Only \($lines) changed lines."} else empty end),
+        (if $docs_only and ($issues|length)==0 then {code:"docs_only_unlinked", detail:"Only text files changed and no issue is linked."} else empty end),
+        (if (($pr.body // "") | gsub("\\s";"") | length) < 30 then {code:"thin_description", detail:"The description is nearly empty."} else empty end),
+        (if ($docs_only|not) and ($has_tests|not) then {code:"no_tests", detail:"Code changed but no test files did."} else empty end),
+        (if $ci == "failing" then {code:"ci_failing", detail:"At least one check is failing."} else empty end)
+      ] as $flags
+    | {ok:true, pr:{number:$pr.number, title:$pr.title, url:$pr.url, state:$pr.state, draft:$pr.isDraft, author:$a,
+                    created_at:$pr.createdAt, additions:$pr.additions, deletions:$pr.deletions, files:$paths, ci:$ci,
+                    description:(($pr.body // "") | .[:1500])},
+       linked_issues:$issues, author_open_prs:$open_prs, flags:$flags,
+       rule_breaks:[$flags[] | select(.code | IN("no_linked_issue","issue_not_assigned_to_author","issue_missing_label","author_over_pr_cap")) | .code]}')"
+  log_event pr_checked "$(jq -c '{pr:.pr.number, author:.pr.author, flags:[.flags[].code]}' <<<"$result")"
+  echo "$result"
+}
+
+cmd_pr_diff() { # pr [max-bytes]
+  need_repo
+  local n="${1:-}" max="${2:-60000}"
+  is_num "$n" || fail "usage: desk pr-diff <pr-number> [max-bytes]"
+  gh pr diff "$n" --repo "$TARGET_REPO" | head -c "$max"
+}
+
+cmd_sweep() {
+  need_repo
+  local args=()
+  while IFS= read -r a; do args+=("$a"); done < <(label_args)
+  local held
+  held="$(gh issue list --repo "$TARGET_REPO" --state open ${args[@]+"${args[@]}"} --limit 200 --json number,title,assignees \
+    --jq '[.[] | select(.assignees|length>0) | {number,title,assignees:[.assignees[].login]}]')"
+
+  local stale="[]" row n u last
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    n="$(jq -r .number <<<"$row")"
+    local timeline
+    timeline="$(gh api "repos/$TARGET_REPO/issues/$n/timeline" --paginate --jq '.[]' | jq -s -c .)"
+    while IFS= read -r u; do
+      last="$(jq -r --arg u "$u" '
+        ([ .[] | select((.event=="assigned" and .assignee.login==$u)
+                        or (.event=="commented" and ((.user.login // .actor.login)==$u))
+                        or (.event=="referenced" and .actor.login==$u)) | .created_at ]
+         + [ .[] | select(.event=="cross-referenced" and (.source.issue.user.login==$u or .actor.login==$u))
+             | (.source.issue.updated_at // .created_at) ])
+        | map(fromdateiso8601) | max // empty' <<<"$timeline")"
+      [ -n "$last" ] || continue
+      stale="$(jq -c --argjson row "$row" --arg u "$u" --argjson last "$last" --argjson limit "$IDLE_HOURS" '
+        ((now - $last) / 3600) as $h
+        | if $h >= $limit then . + [{issue:$row.number, title:$row.title, assignee:$u,
+              last_activity:($last|todate), idle_hours:(($h*10|floor)/10)}] else . end' <<<"$stale")"
+    done < <(jq -r '.assignees[]' <<<"$row")
+  done < <(jq -c '.[]' <<<"$held")
+
+  local prs
+  prs="$(gh pr list --repo "$TARGET_REPO" --state open --limit 100 --json number,title,author,createdAt,closingIssuesReferences \
+    --jq '[.[] | {number,title,author:.author.login,created_at:.createdAt,closes:[.closingIssuesReferences[]?.number]}]')"
+
+  local result
+  result="$(jq -cn --argjson stale "$stale" --argjson prs "$prs" --argjson held "$held" --argjson limit "$IDLE_HOURS" \
+    '{ok:true, idle_limit_hours:$limit, assigned_issues:($held|length), stale:$stale, open_prs:$prs}')"
+  log_event swept "$(jq -c '{stale:(.stale|length), open_prs:(.open_prs|length)}' <<<"$result")"
+  echo "$result"
+}
+
+cmd_log() { # type json
+  local type="${1:-}" data="${2:-}"
+  [ -n "$data" ] || data='{}'
+  [ -n "$type" ] || fail "usage: desk log <type> '<json object>'"
+  jq -e 'type=="object"' <<<"$data" >/dev/null 2>&1 || fail "the second argument must be a JSON object"
+  log_event "$type" "$data"
+  echo '{"ok":true,"logged":true}'
+}
+
+cmd_metrics() {
+  [ -s "$DESK_LOG" ] || { echo '{"ok":true,"events":0}'; return; }
+  jq -s -c --arg repo "${TARGET_REPO:-}" '
+    (if $repo == "" then . else map(select(.repo == $repo)) end) as $e
+    | def n(t): [$e[] | select(.type==t)] | length;
+    {ok:true, repo:(if $repo=="" then "all" else $repo end), events:($e|length),
+     first:($e[0].ts // null), last:($e[-1].ts // null),
+     claims_checked:n("claim_checked"),
+     claims_eligible:([$e[] | select(.type=="claim_checked" and .eligible)] | length),
+     claims_blocked:([$e[] | select(.type=="claim_checked" and (.eligible|not))] | length),
+     block_reasons:([$e[] | select(.type=="claim_checked") | .blocks[]] | group_by(.) | map({(.[0]):length}) | add // {}),
+     assigned:n("assigned"), unassigned:n("unassigned"),
+     prs_checked:n("pr_checked"),
+     pr_flags:([$e[] | select(.type=="pr_checked") | .flags[]] | group_by(.) | map({(.[0]):length}) | add // {}),
+     verdicts:n("verdict"), agreements:n("agreement"), disagreements:n("disagreement"),
+     comments:n("commented"), prs_closed:n("pr_closed"), sweeps:n("swept"),
+     maintainer_approvals:([$e[] | select(.type=="assigned" or .type=="unassigned" or .type=="pr_closed")] | length)}' "$DESK_LOG"
+}
+
+cmd_config() {
+  jq -cn --arg repo "$TARGET_REPO" --arg label "$CLAIM_LABEL" --argjson pr_cap "$PR_CAP" --argjson assign_cap "$ASSIGN_CAP" \
+    --argjson idle "$IDLE_HOURS" --argjson trivial "$TRIVIAL_LINES" --arg dry "$DRY_RUN" --arg log "$DESK_LOG" \
+    '{ok:true, target_repo:$repo, claim_label:$label, pr_cap:$pr_cap, assign_cap:$assign_cap, idle_hours:$idle,
+      trivial_lines:$trivial, dry_run:($dry=="1"), log:$log}'
+}
+
+usage() {
+  cat <<'EOF'
+desk: the rulebook behind Maintainer Desk. Every command prints JSON.
+
+  desk config                          the rules in force
+  desk claim-check <issue> <user>      can <user> take <issue>? (label, free, PR cap, issue cap)
+  desk free-issues [n]                 unassigned claimable issues
+  desk assign <issue> <user> [by]      assign and comment            (DRY_RUN=1 to preview)
+  desk unassign <issue> <user> [why]   unassign and comment          (DRY_RUN=1 to preview)
+  desk comment <number> <text>         comment on an issue or PR     (DRY_RUN=1 to preview)
+  desk close-pr <pr> <reason>          close a PR with a comment     (DRY_RUN=1 to preview)
+  desk pr-facts <pr>                   linked issues, rule breaks, size, tests, CI
+  desk pr-diff <pr> [max-bytes]        the diff, truncated
+  desk sweep                           stale assignments and open PRs
+  desk log <type> '<json>'             record a verdict or decision
+  desk metrics                         what the desk has done
+
+Rules live in desk.conf; any can be overridden by an environment variable.
+EOF
+}
+
+command -v gh >/dev/null || fail "gh (GitHub CLI) is not installed"
+command -v jq >/dev/null || fail "jq is not installed"
+
+sub="${1:-help}"; shift || true
+case "$sub" in
+  config) cmd_config ;;
+  claim-check) cmd_claim_check "$@" ;;
+  free-issues) cmd_free_issues "$@" ;;
+  assign) cmd_assign "$@" ;;
+  unassign) cmd_unassign "$@" ;;
+  comment) cmd_comment "$@" ;;
+  close-pr) cmd_close_pr "$@" ;;
+  pr-facts) cmd_pr_facts "$@" ;;
+  pr-diff) cmd_pr_diff "$@" ;;
+  sweep) cmd_sweep ;;
+  log) cmd_log "$@" ;;
+  metrics) cmd_metrics ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac
