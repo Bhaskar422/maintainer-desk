@@ -261,7 +261,7 @@ cmd_log() { # type json
 cmd_metrics() {
   [ -s "$DESK_LOG" ] || { echo '{"ok":true,"events":0}'; return; }
   jq -s -c --arg repo "${TARGET_REPO:-}" '
-    (if $repo == "" then . else map(select(.repo == $repo)) end) as $e
+    (if $repo == "" then . else map(select(.repo == $repo or .repo == "")) end) as $e
     | def n(t): [$e[] | select(.type==t)] | length;
     {ok:true, repo:(if $repo=="" then "all" else $repo end), events:($e|length),
      first:($e[0].ts // null), last:($e[-1].ts // null),
