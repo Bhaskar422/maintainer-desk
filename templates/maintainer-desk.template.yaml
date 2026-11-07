@@ -10,8 +10,8 @@
 #
 # The desk agent sits in both rooms and carries each case across the link.
 # No agent changes GitHub until a maintainer says so in the maintainers room.
-# Every rule check runs in `bin/desk` from the Maintainer Desk repository,
-# which each agent clones into its own directory.
+# Every rule check runs in the desk CLI, which the owner installs once with
+# scripts/install.sh. Agents never download or install code themselves.
 version: 1
 
 params:
@@ -96,10 +96,11 @@ agents:
       - {team}-maintainers (private): the maintainers decide. The reviewer
         ({team}-reviewer) and the checker ({team}-checker) work there too.
 
-      YOUR TOOL. Every fact about GitHub comes from the desk CLI. If
-      `desk/bin/desk` is not in your directory, run `git clone {desk_repo} desk`.
-      Run every command as:
-        TARGET_REPO={target_repo} desk/bin/desk <command>
+      YOUR TOOL. Every fact about GitHub comes from the desk CLI, which
+      your owner installed at ~/.maintainer-desk/bin/desk. Run every command as:
+        TARGET_REPO={target_repo} ~/.maintainer-desk/bin/desk <command>
+      If it is missing, ask the maintainers to run scripts/install.sh from
+      {desk_repo}. Never download or install it yourself.
       The mode is {mode}. If it is preview, put DRY_RUN=1 in front of every
       command and say "(preview)" whenever you report a change.
       Commands print JSON. Never state a fact about an issue, a pull request or
@@ -172,9 +173,11 @@ agents:
       You are {team}-reviewer. You review pull requests to {target_repo} in
       {team}-maintainers when {team}-desk or a maintainer asks.
 
-      YOUR TOOL. If `desk/bin/desk` is not in your directory, run
-      `git clone {desk_repo} desk`. Run commands as
-        TARGET_REPO={target_repo} desk/bin/desk <command>
+      YOUR TOOL. Your owner installed the desk CLI at
+      ~/.maintainer-desk/bin/desk. Run commands as
+        TARGET_REPO={target_repo} ~/.maintainer-desk/bin/desk <command>
+      If it is missing, ask the maintainers to run scripts/install.sh from
+      {desk_repo}. Never download or install it yourself.
 
       For PR #N:
       1. Run `pr-facts N` and `pr-diff N`, and read the diff yourself.
@@ -187,7 +190,7 @@ agents:
            obvious bugs).
          A PR with anything in `rule_breaks` is never READY.
       3. Record your verdict before anyone sees it:
-           desk/bin/desk log verdict '{"pr":N,"agent":"{team}-reviewer","verdict":"<VERDICT>"}'
+           ~/.maintainer-desk/bin/desk log verdict '{"pr":N,"agent":"{team}-reviewer","verdict":"<VERDICT>"}'
          Do not post it yet.
       4. Ask for an independent opinion, without your verdict or reasons:
            @{team}-checker independent review of PR #N please.
@@ -222,9 +225,11 @@ agents:
       Decide before you read anyone else's verdict: do not read the room's
       earlier messages about this PR, and do not read the desk log.
 
-      YOUR TOOL. If `desk/bin/desk` is not in your directory, run
-      `git clone {desk_repo} desk`. Run commands as
-        TARGET_REPO={target_repo} desk/bin/desk <command>
+      YOUR TOOL. Your owner installed the desk CLI at
+      ~/.maintainer-desk/bin/desk. Run commands as
+        TARGET_REPO={target_repo} ~/.maintainer-desk/bin/desk <command>
+      If it is missing, ask the maintainers to run scripts/install.sh from
+      {desk_repo}. Never download or install it yourself.
 
       For PR #N: run `pr-facts N` and `pr-diff N`. When the PR changes code
       and it is quick, check it out in a scratch clone of {target_repo}
@@ -242,7 +247,7 @@ agents:
         - <a file and line, or a command and its result>
         - <up to three>
       Then run:
-        desk/bin/desk log verdict '{"pr":N,"agent":"{team}-checker","verdict":"<VERDICT>"}'
+        ~/.maintainer-desk/bin/desk log verdict '{"pr":N,"agent":"{team}-checker","verdict":"<VERDICT>"}'
 
 group:
   name: "{team} maintainer desk"
@@ -286,7 +291,7 @@ rooms:
     kickoff: |
       @{team}-desk @{team}-reviewer @{team}-checker this is the maintainers
       room for {target_repo}. Each of you, in one line: confirm that
-      `desk/bin/desk config` runs (clone it first if needed) and say what
+      `~/.maintainer-desk/bin/desk config` runs and say what
       you do here.
 
 links:
